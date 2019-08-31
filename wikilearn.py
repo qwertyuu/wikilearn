@@ -2,137 +2,238 @@ import obspython as obs
 import urllib.request
 import urllib.error
 import json
-from playsound import playsound
 import threading
 from google.cloud import texttospeech
+from google.api_core.exceptions import ResourceExhausted
+import random
+from WikiStuff import *
+import pygame
+import time
+import mmap
+import queue
 
-interval = 30
-source_name = ""
+obs_manager = None
+current_state = "stopped"
+ui_thread = None
+downloader_thread = None
+text_source_name = None
 
 
 # ------------------------------------------------------------
 
-def update_text():
-	global interval
-	global source_name
-	url = "https://en.wikipedia.org/w/api.php?format=json&action=query&generator=random&grnnamespace=0&prop=images|extracts&exintro&explaintext&grnlimit=1"
 
-	source = obs.obs_get_source_by_name(source_name)
-	image = obs.obs_get_source_by_name('Image')
-	if source is not None:
-		try:
-			with urllib.request.urlopen(url) as response:
-				data = response.read()
-				text = data.decode('utf-8')
+class OBSSceneManager:
+	def __init__(self, text_source, image_source):
+		self.image_source = image_source
+		self.text_source = text_source
 
-				wiki_object = json.loads(text)
-				page = list(wiki_object['query']['pages'].values())[0]
-				if 'images' in page:
-					article_images = [i['title'] for i in page['images'] if i['title'][-3:] in ['jpg', 'png']]
+	def update_image(self, filename):
+		image_settings = obs.obs_data_create()
+		obs.obs_data_set_string(image_settings, "file", filename)
+		obs.obs_source_update(self.image_source, image_settings)
+		obs.obs_data_release(image_settings)
 
-					if len(article_images) > 0:
-						obs.script_log(obs.LOG_DEBUG, repr(page['extract']))
-						image_url = "https://en.wikipedia.org/w/api.php?action=query&titles=" + urllib.parse.quote(article_images[0]) + "&prop=imageinfo&iiprop=url&format=json"
+	def clear_image(self):
+		self.update_image('')
 
-						try:
-							with urllib.request.urlopen(image_url) as image_response:
-								image_data = image_response.read()
-								image_text = image_data.decode('utf-8')
-								wiki_image_object = json.loads(image_text)
-								image_wikipedia_url = list(wiki_image_object['query']['pages'].values())[0]['imageinfo'][0]['url']
-								(filename, _h) = urllib.request.urlretrieve(image_wikipedia_url, '/filename.' + image_wikipedia_url[-3:])
+	def valid(self):
+		return self.text_source is not None and self.image_source is not None
 
-								image_settings = obs.obs_data_create()
-								obs.obs_data_set_string(image_settings, "file", filename)
-								obs.obs_source_update(image, image_settings)
-								obs.obs_data_release(image_settings)
+	def __del__(self):
+		obs.obs_source_release(self.image_source)
+		obs.obs_source_release(self.text_source)
 
-						except urllib.error.URLError as err:
-							obs.script_log(obs.LOG_WARNING, "Error opening URL '" + image_url + "': " + err.reason)
-							obs.remove_current_callback()
-					else:
-						image_settings = obs.obs_data_create()
-						obs.obs_data_set_string(image_settings, "file", '')
-						obs.obs_source_update(image, image_settings)
-						obs.obs_data_release(image_settings)
-				else:
-					image_settings = obs.obs_data_create()
-					obs.obs_data_set_string(image_settings, "file", '')
-					obs.obs_source_update(image, image_settings)
-					obs.obs_data_release(image_settings)
-
-				settings = obs.obs_data_create()
-				obs.obs_data_set_string(settings, "text", page['title'])
-				obs.obs_source_update(source, settings)
-				obs.obs_data_release(settings)
-				run_thread_tts(page['extract'], finished)
-
-		except urllib.error.URLError as err:
-			obs.script_log(obs.LOG_WARNING, "Error opening URL '" + url + "': " + err.reason)
-			obs.remove_current_callback()
-
-		obs.obs_source_release(source)
+	def update_title(self, title):
+		settings = obs.obs_data_create()
+		obs.obs_data_set_string(settings, "text", title)
+		obs.obs_source_update(self.text_source, settings)
+		obs.obs_data_release(settings)
 
 
-def finished():
-	update_text()
+def wiki_query(url):
+	try:
+		with urllib.request.urlopen(url) as response:
+			data = response.read()
+			decoded_data = data.decode('utf-8')
+			return WikiQuery(json.loads(decoded_data))
+
+	except urllib.error.URLError as err:
+		obs.script_log(obs.LOG_WARNING, "Error opening URL '" + url + "': " + err.reason)
+		obs.remove_current_callback()
 
 
-def run_thread_tts(text, finished_callback):
-	threading.Thread(target=play_sound, args=(text, finished_callback), daemon=True).start()
+def ui_logic(articles_queue: queue.Queue):
+	global obs_manager
+	global current_state
+
+	while current_state == 'reading':
+		obs.script_log(obs.LOG_DEBUG, repr(current_state))
+		wiki_article = articles_queue.get()
+
+		article_images = wiki_article.get_filtered_images()
+		obs.script_log(obs.LOG_DEBUG, wiki_article.get_title())
+		obs.script_log(obs.LOG_DEBUG, repr(articles_queue.qsize()))
+		obs_manager.update_title(wiki_article.get_title())
+		(sound_length_seconds, file_handle) = google_tts(wiki_article.get_extract())
+
+		current_image = 0
+		while current_image == 0 or current_image < len(article_images):
+			image_url = "https://en.wikipedia.org/w/api.php?action=query&titles=" + urllib.parse.quote(
+				article_images[current_image]) + "&prop=imageinfo&iiprop=url&format=json"
+			image_wikipedia_url = wiki_query(image_url).get_image().get_url()
+			(filename, _h) = urllib.request.urlretrieve(image_wikipedia_url, '/filename.' + image_wikipedia_url[-3:])
+
+			obs_manager.update_image(filename)
+			current_image += 1
+			time.sleep(sound_length_seconds / len(article_images))
+		while pygame.mixer.music.get_busy():
+			time.sleep(0.5)
+		if file_handle is not None:
+			file_handle.close()
+		obs_manager.clear_image()
 
 
-def play_sound(text, finished_callback):
+def downloader_logic(articles_queue: queue.Queue):
+	global current_state
+
+	while current_state == 'reading':
+		if articles_queue.qsize() > 5:
+			time.sleep(5)
+			continue
+		url = "https://en.wikipedia.org/w/api.php?format=json&action=query&generator=random&grnnamespace=0&prop=images|extracts&exintro&explaintext&grnlimit=1"
+		wiki_api_query = wiki_query(url)
+		wiki_article = wiki_api_query.get_article()
+
+		article_images = wiki_article.get_filtered_images()
+
+		if article_images and len(wiki_article.get_extract()) < 5000:
+			articles_queue.put(wiki_article)
+
+
+def run_thread_downloader(articles_queue):
+	global downloader_thread
+	downloader_thread = threading.Thread(target=downloader_logic, args=(articles_queue,), daemon=True)
+	downloader_thread.start()
+
+
+def run_thread_ui(articles_queue):
+	global ui_thread
+	ui_thread = threading.Thread(target=ui_logic, args=(articles_queue,), daemon=True)
+	ui_thread.start()
+
+
+def google_tts(text):
+	available_voices = [
+		'en-AU-Wavenet-A',
+		'en-AU-Wavenet-B',
+		'en-AU-Wavenet-C',
+		'en-AU-Wavenet-D',
+		'en-GB-Wavenet-A',
+		'en-GB-Wavenet-B',
+		'en-GB-Wavenet-C',
+		'en-GB-Wavenet-D',
+		'en-US-Wavenet-A',
+		'en-US-Wavenet-B',
+		'en-US-Wavenet-C',
+		'en-US-Wavenet-D',
+		'en-US-Wavenet-E',
+		'en-US-Wavenet-F',
+	]
 	# Instantiates a client
 	client = texttospeech.TextToSpeechClient()
 
 	# Set the text input to be synthesized
-	synthesis_input = texttospeech.types.SynthesisInput(text=text if len(text)<5000 else '')
+	synthesis_input = texttospeech.types.SynthesisInput(text=text if len(text) < 5000 else '')
 
 	# Build the voice request, select the language code ("en-US") and the ssml
 	# voice gender ("neutral")
-	voice = texttospeech.types.VoiceSelectionParams(
-		language_code='en-GB',
-		name='en-GB-Wavenet-A',
-		ssml_gender=texttospeech.enums.SsmlVoiceGender.FEMALE)
+	random_voice = random.choice(available_voices)
+	voice = texttospeech.types.VoiceSelectionParams(language_code=random_voice[:5], name=random_voice)
 
 	# Select the type of audio file you want returned
+	pitch = random.randint(-6, 2)
+	speaking_rate = round(random.uniform(0.8, 1), 2)
 	audio_config = texttospeech.types.AudioConfig(
-		audio_encoding=texttospeech.enums.AudioEncoding.MP3,
-		speaking_rate=0.8,
-		pitch=-3)
+		audio_encoding=texttospeech.enums.AudioEncoding.LINEAR16,
+		speaking_rate=speaking_rate,
+		pitch=pitch)
+
+	obs.script_log(obs.LOG_DEBUG, repr({'voice': random_voice, 'pitch': pitch, 'speaking_rate': speaking_rate}))
 
 	# Perform the text-to-speech request on the text input with the selected
 	# voice parameters and audio file type
-	response = client.synthesize_speech(synthesis_input, voice, audio_config)
+	sound_length_seconds = 0
+	file_handle = None
+	try:
+		response = client.synthesize_speech(synthesis_input, voice, audio_config)
 
-	# The response's audio_content is binary.
-	with open('hello.mp3', 'wb') as out:
-		# Write the response to the output file.
-		out.write(response.audio_content)
-	playsound('hello.mp3')
-	finished_callback()
+		stop_reading()
+
+		# The response's audio_content is binary.
+		with open('hello.wav', 'wb') as out:
+			# Write the response to the output file.
+			out.write(response.audio_content)
+		if not pygame.mixer.get_init():
+			pygame.mixer.init()
+		with open('hello.wav') as f:
+			m = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+		pygame.mixer.music.load(m)
+		sound_length_seconds = pygame.mixer.Sound('hello.wav').get_length()
+		pygame.mixer.music.play()
+		file_handle = m
+
+	except ResourceExhausted as err:
+		obs.script_log(obs.LOG_DEBUG, repr(err))
+
+	return sound_length_seconds, file_handle
 
 
-def refresh_pressed(props, prop):
-	update_text()
+def stop_reading():
+	if pygame.mixer.get_init():
+		pygame.mixer.music.stop()
 
 
-# ------------------------------------------------------------
+def start_pressed(props, prop):
+	global current_state
+	refresh_manager()
+	obs.script_log(obs.LOG_DEBUG, repr(current_state))
+	if current_state != 'reading':
+		current_state = 'reading'
+		articles_queue = queue.Queue()
+		run_thread_downloader(articles_queue)
+		run_thread_ui(articles_queue)
+
+
+def stop_pressed(props, prop):
+	global current_state
+	obs.script_log(obs.LOG_DEBUG, repr(current_state))
+	if current_state != 'stopped':
+		stop_reading()
+		current_state = 'stopped'
+
 
 def script_description():
-	return "Updates a text source to the text retrieved from a URL at every specified interval.\n\nBy Raphinait"
+	return "Reads some stuff from Wikipedia.\n\nBy Raphinait"
 
 
 def script_update(settings):
-	global source_name
+	global obs_manager, text_source_name
 
-	source_name = obs.obs_data_get_string(settings, "source")
+	text_source_name = obs.obs_data_get_string(settings, "source")
+	refresh_manager()
+
+
+def refresh_manager():
+	global obs_manager, text_source_name
+	text_source = obs.obs_get_source_by_name(text_source_name)
+	image_source = obs.obs_get_source_by_name("Image")
+	obs_manager = OBSSceneManager(text_source, image_source)
+
 
 def script_properties():
 	props = obs.obs_properties_create()
 
-	p = obs.obs_properties_add_list(props, "source", "Text Source", obs.OBS_COMBO_TYPE_EDITABLE,
+	source_property = obs.obs_properties_add_list(props, "source", "Text Source", obs.OBS_COMBO_TYPE_EDITABLE,
 									obs.OBS_COMBO_FORMAT_STRING)
 	sources = obs.obs_enum_sources()
 	if sources is not None:
@@ -140,9 +241,10 @@ def script_properties():
 			source_id = obs.obs_source_get_id(source)
 			if source_id == "text_gdiplus" or source_id == "text_ft2_source":
 				name = obs.obs_source_get_name(source)
-				obs.obs_property_list_add_string(p, name, name)
+				obs.obs_property_list_add_string(source_property, name, name)
 
 		obs.source_list_release(sources)
 
-	obs.obs_properties_add_button(props, "button", "Refresh", refresh_pressed)
+	obs.obs_properties_add_button(props, "start", "Start", start_pressed)
+	obs.obs_properties_add_button(props, "stop", "Stop", stop_pressed)
 	return props

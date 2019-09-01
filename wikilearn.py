@@ -11,6 +11,7 @@ import pygame
 import time
 import mmap
 import queue
+import ImageDownloader
 
 obs_manager = None
 current_state = "stopped"
@@ -62,29 +63,54 @@ def wiki_query(url):
 		obs.remove_current_callback()
 
 
+def wikibase_query(url):
+	try:
+		with urllib.request.urlopen(url) as response:
+			data = response.read()
+			decoded_data = data.decode('utf-8')
+			return WikiBaseQuery(json.loads(decoded_data))
+
+	except urllib.error.URLError as err:
+		obs.script_log(obs.LOG_WARNING, "Error opening URL '" + url + "': " + err.reason)
+		obs.remove_current_callback()
+
+
+def wikimedia_query(url):
+	try:
+		with urllib.request.urlopen(url) as response:
+			data = response.read()
+			decoded_data = data.decode('utf-8')
+			return WikiMediaQuery(json.loads(decoded_data))
+
+	except urllib.error.URLError as err:
+		obs.script_log(obs.LOG_WARNING, "Error opening URL '" + url + "': " + err.reason)
+		obs.remove_current_callback()
+
+
 def ui_logic(articles_queue: queue.Queue):
 	global obs_manager
 	global current_state
 
 	while current_state == 'reading':
 		obs.script_log(obs.LOG_DEBUG, repr(current_state))
-		wiki_article = articles_queue.get()
+		wiki_super_container = articles_queue.get()
+		wiki_article = wiki_super_container.wiki_article
 
-		article_images = wiki_article.get_filtered_images()
 		obs.script_log(obs.LOG_DEBUG, wiki_article.get_title())
 		obs.script_log(obs.LOG_DEBUG, repr(articles_queue.qsize()))
 		obs_manager.update_title(wiki_article.get_title())
 		(sound_length_seconds, file_handle) = google_tts(wiki_article.get_extract())
 
-		current_image = 0
-		while current_image == 0 or current_image < len(article_images):
+		article_images = wiki_super_container.get_images()
+		for article_image in article_images:
+			if not pygame.mixer.music.get_busy():
+				break
 			image_url = "https://en.wikipedia.org/w/api.php?action=query&titles=" + urllib.parse.quote(
-				article_images[current_image]) + "&prop=imageinfo&iiprop=url&format=json"
+				article_image) + "&prop=imageinfo&iiprop=url&format=json"
 			image_wikipedia_url = wiki_query(image_url).get_image().get_url()
-			(filename, _h) = urllib.request.urlretrieve(image_wikipedia_url, '/filename.' + image_wikipedia_url[-3:])
+			filename = ImageDownloader.download_image(image_wikipedia_url)
 
 			obs_manager.update_image(filename)
-			current_image += 1
 			time.sleep(sound_length_seconds / len(article_images))
 		while pygame.mixer.music.get_busy():
 			time.sleep(0.5)
@@ -100,14 +126,26 @@ def downloader_logic(articles_queue: queue.Queue):
 		if articles_queue.qsize() > 5:
 			time.sleep(5)
 			continue
-		url = "https://en.wikipedia.org/w/api.php?format=json&action=query&generator=random&grnnamespace=0&prop=images|extracts&exintro&explaintext&grnlimit=1"
+		url = "https://en.wikipedia.org/w/api.php?format=json&action=query&generator=random&grnnamespace=0&prop=images|pageprops|extracts&exintro&explaintext&grnlimit=1"
 		wiki_api_query = wiki_query(url)
 		wiki_article = wiki_api_query.get_article()
+
+		wikibase_url = "https://www.wikidata.org/w/api.php?action=wbgetentities&ids=" + wiki_article.get_wikibase_id() + "&props=sitelinks&formatversion=2&format=json"
+		wikibase_api_query = wikibase_query(wikibase_url)
+		wikibase_entity = wikibase_api_query.get_entity()
+
+		wikimedia_category = wikibase_entity.get_commons_category()
+		wikimedia_api_query = None
+
+		if wikimedia_category is not None:
+			wikimedia_url = "https://commons.wikimedia.org/w/api.php?action=query&list=categorymembers&cmtitle=" + urllib.parse.quote(
+				wikimedia_category) + "&cmlimit=10&cmtype=file&format=json"
+			wikimedia_api_query = wikimedia_query(wikimedia_url)
 
 		article_images = wiki_article.get_filtered_images()
 
 		if article_images and len(wiki_article.get_extract()) < 5000:
-			articles_queue.put(wiki_article)
+			articles_queue.put(WikiSuperContainer(wiki_article, wikimedia_api_query))
 
 
 def run_thread_downloader(articles_queue):
@@ -234,7 +272,7 @@ def script_properties():
 	props = obs.obs_properties_create()
 
 	source_property = obs.obs_properties_add_list(props, "source", "Text Source", obs.OBS_COMBO_TYPE_EDITABLE,
-									obs.OBS_COMBO_FORMAT_STRING)
+												  obs.OBS_COMBO_FORMAT_STRING)
 	sources = obs.obs_enum_sources()
 	if sources is not None:
 		for source in sources:

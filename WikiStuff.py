@@ -6,7 +6,7 @@ class WikiArticle:
 
 	def get_filtered_images(self, extension_filter=None):
 		if extension_filter is None:
-			extension_filter = ['jpg', 'png']
+			extension_filter = ['jpg', 'png', 'svg']
 
 		return [i['title'] for i in self.wiki_object.get('images', []) if i['title'][-3:] in extension_filter]
 

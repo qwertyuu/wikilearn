@@ -11,6 +11,8 @@ import pygame
 import time
 import mmap
 import queue
+from svglib.svglib import svg2rlg
+from reportlab.graphics import renderPM
 
 obs_manager = None
 current_state = "stopped"
@@ -81,9 +83,15 @@ def ui_logic(articles_queue: queue.Queue):
 			image_url = "https://en.wikipedia.org/w/api.php?action=query&titles=" + urllib.parse.quote(
 				article_images[current_image]) + "&prop=imageinfo&iiprop=url&format=json"
 			image_wikipedia_url = wiki_query(image_url).get_image().get_url()
-			(filename, _h) = urllib.request.urlretrieve(image_wikipedia_url, '/filename.' + image_wikipedia_url[-3:])
+			filename = sink_image(image_wikipedia_url)
 
-			obs_manager.update_image(filename)
+			if filename is not None:
+				if filename.endswith('.svg'):
+					obs.script_log(obs.LOG_DEBUG, 'svg!')
+					drawing = svg2rlg(filename)
+					renderPM.drawToFile(drawing, "/filename.png", fmt="PNG")
+					filename = '/filename.png'
+				obs_manager.update_image(filename)
 			current_image += 1
 			time.sleep(sound_length_seconds / len(article_images))
 		while pygame.mixer.music.get_busy():
@@ -91,6 +99,15 @@ def ui_logic(articles_queue: queue.Queue):
 		if file_handle is not None:
 			file_handle.close()
 		obs_manager.clear_image()
+
+
+def sink_image(image_url):
+	try:
+		(filename, _h) = urllib.request.urlretrieve(image_url, '/filename.' + image_url[-3:])
+		return filename
+	except urllib.error.ContentTooShortError as err:
+		obs.script_log(obs.LOG_DEBUG, repr(err))
+	return None
 
 
 def downloader_logic(articles_queue: queue.Queue):

@@ -1,13 +1,10 @@
 import urllib.request
+import WikiStuff
+import os
+from pathvalidate import sanitize_filename
 
-current_position = 0
-max_position = 10
 
-
-def download_image(image_wikipedia_url):
-	global current_position
-	current_position = current_position + 1
-	if current_position > max_position:
-		current_position = 1
-	(filename, _h) = urllib.request.urlretrieve(image_wikipedia_url, '/filename' + str(current_position) + '.' + image_wikipedia_url[-3:])
+def download_image(image_wikipedia: WikiStuff.WikiImage, folder):
+	wikipedia_filename = image_wikipedia.get_title()
+	(filename, _h) = urllib.request.urlretrieve(image_wikipedia.get_url(), os.path.join(folder, sanitize_filename(wikipedia_filename.replace('File:', ''))))
 	return filename

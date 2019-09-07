@@ -1,11 +1,8 @@
 class WikiSuperContainer:
-	def __init__(self, wiki_article, wikimedia_query):
+	def __init__(self, wiki_article, downloaded_images, audio):
 		self.wiki_article = wiki_article
-		self.wikimedia_query = wikimedia_query
-
-	def get_images(self):
-		return self.wiki_article.get_filtered_images() + (
-			self.wikimedia_query.get_filenames() if self.wikimedia_query is not None else [])
+		self.downloaded_images = downloaded_images
+		self.audio = audio
 
 
 class WikiArticle:
@@ -22,6 +19,9 @@ class WikiArticle:
 
 	def get_wikibase_id(self):
 		return self.wiki_object.get('pageprops', {}).get('wikibase_item')
+
+	def get_page_id(self):
+		return self.wiki_object.get('pageid')
 
 	def get_title(self):
 		return self.wiki_object.get('title')
@@ -85,7 +85,8 @@ class WikiBaseQuery:
 		return list(self.wiki_object['entities'].values())
 
 	def get_entity(self, index=0) -> WikiBaseEntity:
-		return WikiBaseEntity(self.get_entities_raw()[index])
+		entities = self.get_entities_raw()
+		return WikiBaseEntity(entities[index]) if len(entities) > 0 else None
 
 
 class WikiMediaQuery:
@@ -93,4 +94,5 @@ class WikiMediaQuery:
 		self.wiki_object = wiki_object
 
 	def get_filenames(self):
-		return [r['title'] for r in self.wiki_object['query']['categorymembers']]
+		extension_filter = ['jpg', 'png']
+		return [r['title'] for r in self.wiki_object.get('query', {}).get('categorymembers', []) if r['title'][-3:] in extension_filter]

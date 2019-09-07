@@ -12,12 +12,18 @@ import time
 import mmap
 import queue
 import ImageDownloader
+from PIL import Image
+import shutil
+import os
 
 obs_manager = None
 current_state = "stopped"
 ui_thread = None
 downloader_thread = None
+cleaner_thread = None
 text_source_name = None
+downloading_path = os.path.join(os.getcwd(), 'wikilearn', 'downloading')
+queued_path = os.path.join(os.getcwd(), 'wikilearn', 'queued')
 
 
 # ------------------------------------------------------------
@@ -51,6 +57,12 @@ class OBSSceneManager:
 		obs.obs_data_release(settings)
 
 
+class Audio:
+	def __init__(self, file, duration):
+		self.file = file
+		self.duration = duration
+
+
 def wiki_query(url):
 	try:
 		with urllib.request.urlopen(url) as response:
@@ -58,8 +70,8 @@ def wiki_query(url):
 			decoded_data = data.decode('utf-8')
 			return WikiQuery(json.loads(decoded_data))
 
-	except urllib.error.URLError as err:
-		obs.script_log(obs.LOG_WARNING, "Error opening URL '" + url + "': " + err.reason)
+	except Exception as err:
+		obs.script_log(obs.LOG_WARNING, "Error opening URL '" + url + "': " + repr(err))
 		obs.remove_current_callback()
 
 
@@ -70,8 +82,8 @@ def wikibase_query(url):
 			decoded_data = data.decode('utf-8')
 			return WikiBaseQuery(json.loads(decoded_data))
 
-	except urllib.error.URLError as err:
-		obs.script_log(obs.LOG_WARNING, "Error opening URL '" + url + "': " + err.reason)
+	except Exception as err:
+		obs.script_log(obs.LOG_WARNING, "Error opening URL '" + url + "': " + repr(err))
 		obs.remove_current_callback()
 
 
@@ -82,57 +94,82 @@ def wikimedia_query(url):
 			decoded_data = data.decode('utf-8')
 			return WikiMediaQuery(json.loads(decoded_data))
 
-	except urllib.error.URLError as err:
-		obs.script_log(obs.LOG_WARNING, "Error opening URL '" + url + "': " + err.reason)
+	except Exception as err:
+		obs.script_log(obs.LOG_WARNING, "Error opening URL '" + url + "': " + repr(err))
 		obs.remove_current_callback()
+
+
+def image_too_small(filename):
+	im = Image.open(filename)
+	width, height = im.size
+	return width < 100 or height < 100
 
 
 def ui_logic(articles_queue: queue.Queue):
 	global obs_manager
 	global current_state
+	global queued_path
 
 	while current_state == 'reading':
 		obs.script_log(obs.LOG_DEBUG, repr(current_state))
-		wiki_super_container = articles_queue.get()
+		wiki_super_container: WikiSuperContainer = articles_queue.get()
 		wiki_article = wiki_super_container.wiki_article
 
 		obs.script_log(obs.LOG_DEBUG, wiki_article.get_title())
 		obs.script_log(obs.LOG_DEBUG, repr(articles_queue.qsize()))
+		obs.script_log(obs.LOG_DEBUG, repr(wiki_super_container.audio.file))
 		obs_manager.update_title(wiki_article.get_title())
-		(sound_length_seconds, file_handle) = google_tts(wiki_article.get_extract())
 
-		article_images = wiki_super_container.get_images()
+		with open(wiki_super_container.audio.file) as f:
+			m = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+		sound_length_seconds = pygame.mixer.Sound(wiki_super_container.audio.file).get_length()
+		pygame.mixer.music.load(m)
+		pygame.mixer.music.play()
+		article_images = wiki_super_container.downloaded_images
 		for article_image in article_images:
 			if not pygame.mixer.music.get_busy():
 				break
-			image_url = "https://en.wikipedia.org/w/api.php?action=query&titles=" + urllib.parse.quote(
-				article_image) + "&prop=imageinfo&iiprop=url&format=json"
-			image_wikipedia_url = wiki_query(image_url).get_image().get_url()
-			filename = ImageDownloader.download_image(image_wikipedia_url)
-
-			obs_manager.update_image(filename)
+			obs_manager.update_image(article_image)
 			time.sleep(sound_length_seconds / len(article_images))
 		while pygame.mixer.music.get_busy():
 			time.sleep(0.5)
-		if file_handle is not None:
-			file_handle.close()
+		m.close()
+		final_folder = os.path.join(queued_path, str(wiki_article.get_page_id()))
+		shutil.rmtree(final_folder)
 		obs_manager.clear_image()
 
 
 def downloader_logic(articles_queue: queue.Queue):
 	global current_state
+	global downloading_path, queued_path
 
 	while current_state == 'reading':
 		if articles_queue.qsize() > 5:
 			time.sleep(5)
 			continue
+
 		url = "https://en.wikipedia.org/w/api.php?format=json&action=query&generator=random&grnnamespace=0&prop=images|pageprops|extracts&exintro&explaintext&grnlimit=1"
 		wiki_api_query = wiki_query(url)
-		wiki_article = wiki_api_query.get_article()
 
-		wikibase_url = "https://www.wikidata.org/w/api.php?action=wbgetentities&ids=" + wiki_article.get_wikibase_id() + "&props=sitelinks&formatversion=2&format=json"
+		if wiki_api_query is None:
+			return
+
+		wiki_article = wiki_api_query.get_article()
+		wikibase_id = wiki_article.get_wikibase_id()
+
+		if wikibase_id is None:
+			return
+
+		wikibase_url = "https://www.wikidata.org/w/api.php?action=wbgetentities&ids=" + wikibase_id + "&props=sitelinks&formatversion=2&format=json"
 		wikibase_api_query = wikibase_query(wikibase_url)
+
+		if wikibase_api_query is None:
+			return
+
 		wikibase_entity = wikibase_api_query.get_entity()
+
+		if wikibase_entity is None:
+			return
 
 		wikimedia_category = wikibase_entity.get_commons_category()
 		wikimedia_api_query = None
@@ -145,22 +182,53 @@ def downloader_logic(articles_queue: queue.Queue):
 		article_images = wiki_article.get_filtered_images()
 
 		if article_images and len(wiki_article.get_extract()) < 5000:
-			articles_queue.put(WikiSuperContainer(wiki_article, wikimedia_api_query))
+			downloading_folder = os.path.join(downloading_path, str(wiki_article.get_page_id()))
+			final_folder = os.path.join(queued_path, str(wiki_article.get_page_id()))
+			os.makedirs(downloading_folder)
+
+			tts_filename = os.path.join(downloading_folder, 'hello.wav')
+
+			sound_length_seconds = google_tts(wiki_article.get_extract(), tts_filename)
+			if sound_length_seconds is None:
+				continue
+
+			all_images = wiki_article.get_filtered_images() + (
+				wikimedia_api_query.get_filenames() if wikimedia_api_query is not None else [])
+
+			downloaded_images = []
+			for article_image in all_images:
+				image_url = "https://en.wikipedia.org/w/api.php?action=query&titles=" + urllib.parse.quote(
+					article_image) + "&prop=imageinfo&iiprop=url&format=json"
+				image_wikipedia = wiki_query(image_url)
+				if image_wikipedia is not None:
+					image_wikipedia = image_wikipedia.get_image()
+					filename = ImageDownloader.download_image(image_wikipedia, downloading_folder)
+					obs.script_log(obs.LOG_DEBUG, filename)
+					downloaded_images.append(filename)
+
+			shutil.move(downloading_folder, final_folder)
+			moved_images = [os.path.join(final_folder, os.path.basename(f)) for f in downloaded_images]
+			final_tts_filename = os.path.join(final_folder, 'hello.wav')
+
+			filtered_images = [i for i in moved_images if not image_too_small(i)]
+
+			articles_queue.put(WikiSuperContainer(wiki_article, filtered_images, Audio(final_tts_filename, sound_length_seconds)))
 
 
 def run_thread_downloader(articles_queue):
 	global downloader_thread
-	downloader_thread = threading.Thread(target=downloader_logic, args=(articles_queue,), daemon=True)
+	downloader_thread = threading.Thread(target=downloader_logic, args=(articles_queue,), name='downloader',
+										 daemon=True)
 	downloader_thread.start()
 
 
 def run_thread_ui(articles_queue):
 	global ui_thread
-	ui_thread = threading.Thread(target=ui_logic, args=(articles_queue,), daemon=True)
+	ui_thread = threading.Thread(target=ui_logic, args=(articles_queue,), name='ui', daemon=True)
 	ui_thread.start()
 
 
-def google_tts(text):
+def google_tts(text, save_to):
 	available_voices = [
 		'en-AU-Wavenet-A',
 		'en-AU-Wavenet-B',
@@ -201,34 +269,32 @@ def google_tts(text):
 	# Perform the text-to-speech request on the text input with the selected
 	# voice parameters and audio file type
 	sound_length_seconds = 0
-	file_handle = None
 	try:
 		response = client.synthesize_speech(synthesis_input, voice, audio_config)
 
-		stop_reading()
-
 		# The response's audio_content is binary.
-		with open('hello.wav', 'wb') as out:
+		with open(save_to, 'wb') as out:
 			# Write the response to the output file.
 			out.write(response.audio_content)
-		if not pygame.mixer.get_init():
-			pygame.mixer.init()
-		with open('hello.wav') as f:
-			m = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
-		pygame.mixer.music.load(m)
-		sound_length_seconds = pygame.mixer.Sound('hello.wav').get_length()
-		pygame.mixer.music.play()
-		file_handle = m
 
 	except ResourceExhausted as err:
 		obs.script_log(obs.LOG_DEBUG, repr(err))
+		return None
 
-	return sound_length_seconds, file_handle
+	return sound_length_seconds
 
 
 def stop_reading():
 	if pygame.mixer.get_init():
 		pygame.mixer.music.stop()
+
+
+def clean_files():
+	global downloading_path, queued_path
+	shutil.rmtree(queued_path)
+	shutil.rmtree(downloading_path)
+	os.makedirs(queued_path)
+	os.makedirs(downloading_path)
 
 
 def start_pressed(props, prop):
@@ -237,6 +303,11 @@ def start_pressed(props, prop):
 	obs.script_log(obs.LOG_DEBUG, repr(current_state))
 	if current_state != 'reading':
 		current_state = 'reading'
+		clean_files()
+		if not pygame.get_init():
+			pygame.init()
+		if not pygame.mixer.get_init():
+			pygame.mixer.init()
 		articles_queue = queue.Queue()
 		run_thread_downloader(articles_queue)
 		run_thread_ui(articles_queue)

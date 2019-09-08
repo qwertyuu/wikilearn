@@ -156,24 +156,24 @@ def downloader_logic(articles_queue: queue.Queue):
 		wiki_api_query = wiki_query(url)
 
 		if wiki_api_query is None:
-			return
+			continue
 
 		wiki_article = wiki_api_query.get_article()
 		wikibase_id = wiki_article.get_wikibase_id()
 
 		if wikibase_id is None:
-			return
+			continue
 
 		wikibase_url = "https://www.wikidata.org/w/api.php?action=wbgetentities&ids=" + wikibase_id + "&props=sitelinks&formatversion=2&format=json"
 		wikibase_api_query = wikibase_query(wikibase_url)
 
 		if wikibase_api_query is None:
-			return
+			continue
 
 		wikibase_entity = wikibase_api_query.get_entity()
 
 		if wikibase_entity is None:
-			return
+			continue
 
 		wikimedia_category = wikibase_entity.get_commons_category()
 		wikimedia_api_query = None

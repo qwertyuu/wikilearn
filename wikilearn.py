@@ -22,6 +22,7 @@ ui_thread = None
 downloader_thread = None
 cleaner_thread = None
 text_source_name = None
+wiki_locale = "en"
 downloading_path = os.path.join(os.getcwd(), 'wikilearn', 'downloading')
 queued_path = os.path.join(os.getcwd(), 'wikilearn', 'queued')
 
@@ -100,7 +101,10 @@ def wikimedia_query(url):
 
 
 def image_too_small(filename):
-	im = Image.open(filename)
+	try:
+		im = Image.open(filename)
+	except Image.DecompressionBombError:
+		return True
 	width, height = im.size
 	return width < 100 or height < 100
 
@@ -141,14 +145,14 @@ def ui_logic(articles_queue: queue.Queue):
 
 def downloader_logic(articles_queue: queue.Queue):
 	global current_state
-	global downloading_path, queued_path
+	global downloading_path, queued_path, wiki_locale
 
 	while current_state == 'reading':
 		if articles_queue.qsize() > 5:
 			time.sleep(5)
 			continue
 
-		url = "https://en.wikipedia.org/w/api.php?format=json&action=query&generator=random&grnnamespace=0&prop=images|pageprops|extracts&exintro&explaintext&grnlimit=1"
+		url = "https://" + wiki_locale + ".wikipedia.org/w/api.php?format=json&action=query&generator=random&grnnamespace=0&prop=images|pageprops|extracts&exintro&explaintext&grnlimit=1"
 		wiki_api_query = wiki_query(url)
 
 		if wiki_api_query is None:
@@ -197,7 +201,7 @@ def downloader_logic(articles_queue: queue.Queue):
 
 			downloaded_images = []
 			for article_image in all_images:
-				image_url = "https://en.wikipedia.org/w/api.php?action=query&titles=" + urllib.parse.quote(
+				image_url = "https://" + wiki_locale + ".wikipedia.org/w/api.php?action=query&titles=" + urllib.parse.quote(
 					article_image) + "&prop=imageinfo&iiprop=url&format=json"
 				image_wikipedia = wiki_query(image_url)
 				if image_wikipedia is not None:
@@ -212,7 +216,8 @@ def downloader_logic(articles_queue: queue.Queue):
 
 			filtered_images = [i for i in moved_images if not image_too_small(i)]
 
-			articles_queue.put(WikiSuperContainer(wiki_article, filtered_images, Audio(final_tts_filename, sound_length_seconds)))
+			articles_queue.put(
+				WikiSuperContainer(wiki_article, filtered_images, Audio(final_tts_filename, sound_length_seconds)))
 
 
 def run_thread_downloader(articles_queue):
@@ -229,22 +234,35 @@ def run_thread_ui(articles_queue):
 
 
 def google_tts(text, save_to):
-	available_voices = [
-		'en-AU-Wavenet-A',
-		'en-AU-Wavenet-B',
-		'en-AU-Wavenet-C',
-		'en-AU-Wavenet-D',
-		'en-GB-Wavenet-A',
-		'en-GB-Wavenet-B',
-		'en-GB-Wavenet-C',
-		'en-GB-Wavenet-D',
-		'en-US-Wavenet-A',
-		'en-US-Wavenet-B',
-		'en-US-Wavenet-C',
-		'en-US-Wavenet-D',
-		'en-US-Wavenet-E',
-		'en-US-Wavenet-F',
-	]
+	global wiki_locale
+	available_voices = {
+		'en': [
+			'en-AU-Wavenet-A',
+			'en-AU-Wavenet-B',
+			'en-AU-Wavenet-C',
+			'en-AU-Wavenet-D',
+			'en-GB-Wavenet-A',
+			'en-GB-Wavenet-B',
+			'en-GB-Wavenet-C',
+			'en-GB-Wavenet-D',
+			'en-US-Wavenet-A',
+			'en-US-Wavenet-B',
+			'en-US-Wavenet-C',
+			'en-US-Wavenet-D',
+			'en-US-Wavenet-E',
+			'en-US-Wavenet-F',
+		],
+		'fr': [
+			'fr-CA-Wavenet-A',
+			'fr-CA-Wavenet-B',
+			'fr-CA-Wavenet-C',
+			'fr-CA-Wavenet-D',
+			'fr-FR-Wavenet-A',
+			'fr-FR-Wavenet-B',
+			'fr-FR-Wavenet-C',
+			'fr-FR-Wavenet-D',
+		]
+	}
 	# Instantiates a client
 	client = texttospeech.TextToSpeechClient()
 
@@ -253,12 +271,12 @@ def google_tts(text, save_to):
 
 	# Build the voice request, select the language code ("en-US") and the ssml
 	# voice gender ("neutral")
-	random_voice = random.choice(available_voices)
+	random_voice = random.choice(available_voices[wiki_locale])
 	voice = texttospeech.types.VoiceSelectionParams(language_code=random_voice[:5], name=random_voice)
 
 	# Select the type of audio file you want returned
-	pitch = random.randint(-6, 2)
-	speaking_rate = round(random.uniform(0.8, 1), 2)
+	pitch = random.randint(-3, 3)
+	speaking_rate = round(random.uniform(0.9, 1.15), 2)
 	audio_config = texttospeech.types.AudioConfig(
 		audio_encoding=texttospeech.enums.AudioEncoding.LINEAR16,
 		speaking_rate=speaking_rate,
@@ -326,9 +344,10 @@ def script_description():
 
 
 def script_update(settings):
-	global obs_manager, text_source_name
+	global obs_manager, text_source_name, wiki_locale
 
 	text_source_name = obs.obs_data_get_string(settings, "source")
+	wiki_locale = obs.obs_data_get_string(settings, "locale")
 	refresh_manager()
 
 
@@ -356,4 +375,5 @@ def script_properties():
 
 	obs.obs_properties_add_button(props, "start", "Start", start_pressed)
 	obs.obs_properties_add_button(props, "stop", "Stop", stop_pressed)
+	obs.obs_properties_add_text(props, "locale", "Wiki locale", obs.OBS_TEXT_DEFAULT)
 	return props

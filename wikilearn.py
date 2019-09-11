@@ -204,11 +204,16 @@ def downloader_logic(articles_queue: queue.Queue):
 				image_url = "https://" + wiki_locale + ".wikipedia.org/w/api.php?action=query&titles=" + urllib.parse.quote(
 					article_image) + "&prop=imageinfo&iiprop=url&format=json"
 				image_wikipedia = wiki_query(image_url)
-				if image_wikipedia is not None:
-					image_wikipedia = image_wikipedia.get_image()
-					filename = ImageDownloader.download_image(image_wikipedia, downloading_folder)
-					obs.script_log(obs.LOG_DEBUG, filename)
-					downloaded_images.append(filename)
+				if image_wikipedia is None:
+					continue
+
+				image_wikipedia = image_wikipedia.get_image()
+				filename = ImageDownloader.download_image(image_wikipedia, downloading_folder)
+				if filename is None:
+					continue
+
+				obs.script_log(obs.LOG_DEBUG, filename)
+				downloaded_images.append(filename)
 
 			shutil.move(downloading_folder, final_folder)
 			moved_images = [os.path.join(final_folder, os.path.basename(f)) for f in downloaded_images]

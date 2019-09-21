@@ -105,6 +105,8 @@ def image_too_small(filename):
 		im = Image.open(filename)
 	except Image.DecompressionBombError:
 		return True
+	except OSError:
+		return True
 	width, height = im.size
 	return width < 100 or height < 100
 
@@ -188,7 +190,11 @@ def downloader_logic(articles_queue: queue.Queue):
 		if article_images and len(wiki_article.get_extract()) < 5000:
 			downloading_folder = os.path.join(downloading_path, str(wiki_article.get_page_id()))
 			final_folder = os.path.join(queued_path, str(wiki_article.get_page_id()))
-			os.makedirs(downloading_folder)
+
+			try:
+				os.makedirs(downloading_folder)
+			except FileExistsError as err:
+				pass
 
 			tts_filename = os.path.join(downloading_folder, 'hello.wav')
 

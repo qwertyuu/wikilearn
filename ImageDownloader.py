@@ -7,9 +7,9 @@ from pathvalidate import sanitize_filename
 
 
 def download_image(image_wikipedia: WikiStuff.WikiImage, folder):
-	wikipedia_filename = image_wikipedia.get_title()
-	filename = os.path.join(folder, sanitize_filename(wikipedia_filename))
 	try:
+		wikipedia_filename = image_wikipedia.get_title()
+		filename = os.path.join(folder, sanitize_filename(wikipedia_filename))
 		headers = {'User-Agent': 'WikiLearnBot/1.0 (https://raphaelcote.com/en; cotlarrc@gmail.com) obs/1.0'}
 
 		response = requests.get(image_wikipedia.get_url(), headers=headers)

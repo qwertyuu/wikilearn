@@ -1,13 +1,11 @@
+import random
 import obspython as obs
-import urllib.request
+from urllib.request import Request, urlopen
 import urllib.error
 import json
 import threading
-from google.cloud import texttospeech
-from google.api_core.exceptions import ResourceExhausted
-import random
 from WikiStuff import *
-import pygame
+import sounddevice as sd
 import time
 import mmap
 import queue
@@ -15,6 +13,8 @@ import ImageDownloader
 from PIL import Image
 import shutil
 import os
+import requests
+import soundfile as sf
 
 obs_manager = None
 current_state = "stopped"
@@ -25,6 +25,8 @@ text_source_name = None
 wiki_locale = "en"
 downloading_path = os.path.join(os.getcwd(), 'wikilearn', 'downloading')
 queued_path = os.path.join(os.getcwd(), 'wikilearn', 'queued')
+with open(os.path.join(os.path.dirname(__file__), "voices.txt")) as f:
+	available_voices = f.read().split("\n")
 
 
 # ------------------------------------------------------------
@@ -66,10 +68,10 @@ class Audio:
 
 def wiki_query(url):
 	try:
-		with urllib.request.urlopen(url) as response:
-			data = response.read()
-			decoded_data = data.decode('utf-8')
-			return WikiQuery(json.loads(decoded_data))
+		headers = {'User-Agent': 'WikiLearnBot/1.0 (https://raphaelcote.com/en; cotlarrc@gmail.com) obs/1.0'}
+
+		response = requests.get(url, headers=headers)
+		return WikiQuery(json.loads(response.content))
 
 	except Exception as err:
 		obs.script_log(obs.LOG_WARNING, "Error opening URL '" + url + "': " + repr(err))
@@ -78,10 +80,10 @@ def wiki_query(url):
 
 def wikibase_query(url):
 	try:
-		with urllib.request.urlopen(url) as response:
-			data = response.read()
-			decoded_data = data.decode('utf-8')
-			return WikiBaseQuery(json.loads(decoded_data))
+		headers = {'User-Agent': 'WikiLearnBot/1.0 (https://raphaelcote.com/en; cotlarrc@gmail.com) obs/1.0'}
+
+		response = requests.get(url, headers=headers)
+		return WikiBaseQuery(json.loads(response.content))
 
 	except Exception as err:
 		obs.script_log(obs.LOG_WARNING, "Error opening URL '" + url + "': " + repr(err))
@@ -90,10 +92,10 @@ def wikibase_query(url):
 
 def wikimedia_query(url):
 	try:
-		with urllib.request.urlopen(url) as response:
-			data = response.read()
-			decoded_data = data.decode('utf-8')
-			return WikiMediaQuery(json.loads(decoded_data))
+		headers = {'User-Agent': 'WikiLearnBot/1.0 (https://raphaelcote.com/en; cotlarrc@gmail.com) obs/1.0'}
+
+		response = requests.get(url, headers=headers)
+		return WikiMediaQuery(json.loads(response.content))
 
 	except Exception as err:
 		obs.script_log(obs.LOG_WARNING, "Error opening URL '" + url + "': " + repr(err))
@@ -128,17 +130,19 @@ def ui_logic(articles_queue: queue.Queue):
 
 		with open(wiki_super_container.audio.file) as f:
 			m = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
-		sound_length_seconds = pygame.mixer.Sound(wiki_super_container.audio.file).get_length()
-		pygame.mixer.music.load(m)
-		pygame.mixer.music.play()
+
+		sound_length_seconds = sf.info(wiki_super_container.audio.file).duration
+		data, fs = sf.read(wiki_super_container.audio.file, dtype='float32')
+		sd.play(data, fs)
+		
 		article_images = wiki_super_container.downloaded_images
 		for article_image in article_images:
-			if not pygame.mixer.music.get_busy():
+			s = sd.get_stream()
+			if not s.active:
 				break
 			obs_manager.update_image(article_image)
 			time.sleep(sound_length_seconds / len(article_images))
-		while pygame.mixer.music.get_busy():
-			time.sleep(0.5)
+		sd.wait()
 		m.close()
 		final_folder = os.path.join(queued_path, str(wiki_article.get_page_id()))
 		shutil.rmtree(final_folder)
@@ -227,8 +231,7 @@ def downloader_logic(articles_queue: queue.Queue):
 
 			filtered_images = [i for i in moved_images if not image_too_small(i)]
 
-			articles_queue.put(
-				WikiSuperContainer(wiki_article, filtered_images, Audio(final_tts_filename, sound_length_seconds)))
+			articles_queue.put(WikiSuperContainer(wiki_article, filtered_images, Audio(final_tts_filename, sound_length_seconds)))
 
 
 def run_thread_downloader(articles_queue):
@@ -245,77 +248,23 @@ def run_thread_ui(articles_queue):
 
 
 def google_tts(text, save_to):
-	global wiki_locale
-	available_voices = {
-		'en': [
-			'en-AU-Wavenet-A',
-			'en-AU-Wavenet-B',
-			'en-AU-Wavenet-C',
-			'en-AU-Wavenet-D',
-			'en-GB-Wavenet-A',
-			'en-GB-Wavenet-B',
-			'en-GB-Wavenet-C',
-			'en-GB-Wavenet-D',
-			'en-US-Wavenet-A',
-			'en-US-Wavenet-B',
-			'en-US-Wavenet-C',
-			'en-US-Wavenet-D',
-			'en-US-Wavenet-E',
-			'en-US-Wavenet-F',
-		],
-		'fr': [
-			'fr-CA-Wavenet-A',
-			'fr-CA-Wavenet-B',
-			'fr-CA-Wavenet-C',
-			'fr-CA-Wavenet-D',
-			'fr-FR-Wavenet-A',
-			'fr-FR-Wavenet-B',
-			'fr-FR-Wavenet-C',
-			'fr-FR-Wavenet-D',
-		]
-	}
-	# Instantiates a client
-	client = texttospeech.TextToSpeechClient()
-
-	# Set the text input to be synthesized
-	synthesis_input = texttospeech.types.SynthesisInput(text=text if len(text) < 5000 else '')
-
-	# Build the voice request, select the language code ("en-US") and the ssml
-	# voice gender ("neutral")
-	random_voice = random.choice(available_voices[wiki_locale])
-	voice = texttospeech.types.VoiceSelectionParams(language_code=random_voice[:5], name=random_voice)
-
-	# Select the type of audio file you want returned
-	pitch = random.randint(-3, 3)
-	speaking_rate = round(random.uniform(0.9, 1.15), 2)
-	audio_config = texttospeech.types.AudioConfig(
-		audio_encoding=texttospeech.enums.AudioEncoding.LINEAR16,
-		speaking_rate=speaking_rate,
-		pitch=pitch)
-
-	obs.script_log(obs.LOG_DEBUG, repr({'voice': random_voice, 'pitch': pitch, 'speaking_rate': speaking_rate}))
-
+	
 	# Perform the text-to-speech request on the text input with the selected
 	# voice parameters and audio file type
-	sound_length_seconds = 0
-	try:
-		response = client.synthesize_speech(synthesis_input, voice, audio_config)
+	random_voice = random.choice(available_voices)
+	print(random_voice)
+	response = requests.get("http://localhost:5002/api/tts?text=" + urllib.parse.quote(text) + '&speaker_id=' + urllib.parse.quote(random_voice))
 
-		# The response's audio_content is binary.
-		with open(save_to, 'wb') as out:
-			# Write the response to the output file.
-			out.write(response.audio_content)
+	# The response's audio_content is binary.
+	with open(save_to, 'wb') as out:
+		# Write the response to the output file.
+		out.write(response.content)
 
-	except ResourceExhausted as err:
-		obs.script_log(obs.LOG_DEBUG, repr(err))
-		return None
-
-	return sound_length_seconds
+	return 1
 
 
 def stop_reading():
-	if pygame.mixer.get_init():
-		pygame.mixer.music.stop()
+	sd.stop()
 
 
 def clean_files():
@@ -333,10 +282,6 @@ def start_pressed(props, prop):
 	if current_state != 'reading':
 		current_state = 'reading'
 		clean_files()
-		if not pygame.get_init():
-			pygame.init()
-		if not pygame.mixer.get_init():
-			pygame.mixer.init()
 		articles_queue = queue.Queue()
 		run_thread_downloader(articles_queue)
 		run_thread_ui(articles_queue)

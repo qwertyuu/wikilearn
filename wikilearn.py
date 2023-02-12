@@ -59,9 +59,8 @@ class OBSSceneManager:
 		obs.obs_data_release(settings)
 
 class Audio:
-	def __init__(self, file, duration):
+	def __init__(self, file):
 		self.file = file
-		self.duration = duration
 
 
 def wiki_query(url):
@@ -207,14 +206,12 @@ def downloader_logic(articles_queue: queue.Queue):
 
 			try:
 				os.makedirs(downloading_folder)
-			except FileExistsError as err:
+			except FileExistsError:
 				pass
 
 			tts_filename = os.path.join(downloading_folder, 'hello.wav')
 
-			sound_length_seconds = google_tts(wiki_article.get_extract(), tts_filename)
-			if sound_length_seconds is None:
-				continue
+			tts(wiki_article.get_extract(), tts_filename)
 
 			all_images = wiki_article.get_filtered_images() + (
 				wikimedia_api_query.get_filenames() if wikimedia_api_query is not None else [])
@@ -241,14 +238,14 @@ def downloader_logic(articles_queue: queue.Queue):
 
 			filtered_images = [i for i in moved_images if not image_too_small(i)]
 
-			articles_queue.put(WikiSuperContainer(wiki_article, filtered_images, Audio(final_tts_filename, sound_length_seconds)))
+			articles_queue.put(WikiSuperContainer(wiki_article, filtered_images, Audio(final_tts_filename)))
 
 
 def run_thread_downloader(articles_queue):
 	global downloader_thread
-	downloader_thread = threading.Thread(target=downloader_logic, args=(articles_queue,), name='downloader',
-										 daemon=True)
-	downloader_thread.start()
+	for i in range(5):
+		downloader_thread = threading.Thread(target=downloader_logic, args=(articles_queue,), name='downloader', daemon=True)
+		downloader_thread.start()
 
 
 def run_thread_ui(articles_queue):
@@ -257,7 +254,7 @@ def run_thread_ui(articles_queue):
 	ui_thread.start()
 
 
-def google_tts(text, save_to):
+def tts(text, save_to):
 	
 	# Perform the text-to-speech request on the text input with the selected
 	# voice parameters and audio file type
@@ -269,8 +266,6 @@ def google_tts(text, save_to):
 	with open(save_to, 'wb') as out:
 		# Write the response to the output file.
 		out.write(response.content)
-
-	return 1
 
 
 def stop_reading():

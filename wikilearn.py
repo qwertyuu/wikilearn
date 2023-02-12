@@ -243,7 +243,7 @@ def downloader_logic(articles_queue: queue.Queue):
 
 def run_thread_downloader(articles_queue):
 	global downloader_thread
-	for i in range(5):
+	for i in range(2):
 		downloader_thread = threading.Thread(target=downloader_logic, args=(articles_queue,), name='downloader', daemon=True)
 		downloader_thread.start()
 

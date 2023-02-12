@@ -1,6 +1,6 @@
 import random
 import obspython as obs
-from urllib.request import Request, urlopen
+from pathvalidate import sanitize_filename
 import urllib.error
 import json
 import threading
@@ -58,7 +58,6 @@ class OBSSceneManager:
 		obs.obs_data_set_string(settings, "text", title)
 		obs.obs_source_update(self.text_source, settings)
 		obs.obs_data_release(settings)
-
 
 class Audio:
 	def __init__(self, file, duration):
@@ -132,8 +131,14 @@ def ui_logic(articles_queue: queue.Queue):
 			m = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
 
 		sound_length_seconds = sf.info(wiki_super_container.audio.file).duration
-		data, fs = sf.read(wiki_super_container.audio.file, dtype='float32')
-		sd.play(data, fs)
+		try:
+			data, fs = sf.read(wiki_super_container.audio.file, dtype='float32')
+			sd.play(data, fs)
+		except Exception as e:
+			print(e)
+			print("skipping")
+			sd.stop()
+			continue
 		
 		article_images = wiki_super_container.downloaded_images
 		for article_image in article_images:
@@ -145,8 +150,14 @@ def ui_logic(articles_queue: queue.Queue):
 		sd.wait()
 		m.close()
 		final_folder = os.path.join(queued_path, str(wiki_article.get_page_id()))
-		shutil.rmtree(final_folder)
 		obs_manager.clear_image()
+		for i in range(5):
+			try:
+				shutil.rmtree(final_folder)
+			except Exception as err:
+				print(err)
+			else:
+				break
 
 
 def downloader_logic(articles_queue: queue.Queue):
@@ -218,7 +229,7 @@ def downloader_logic(articles_queue: queue.Queue):
 					continue
 
 				image_wikipedia = image_wikipedia.get_image()
-				filename = ImageDownloader.download_image(image_wikipedia, downloading_folder)
+				filename = download_image(image_wikipedia, downloading_folder)
 				if filename is None:
 					continue
 
@@ -333,3 +344,20 @@ def script_properties():
 	obs.obs_properties_add_button(props, "stop", "Stop", stop_pressed)
 	obs.obs_properties_add_text(props, "locale", "Wiki locale", obs.OBS_TEXT_DEFAULT)
 	return props
+
+
+def download_image(image_wikipedia: WikiImage, folder):
+	try:
+		print("new")
+		wikipedia_filename = image_wikipedia.get_title()
+		filename = os.path.join(folder, sanitize_filename(wikipedia_filename))
+		headers = {'User-Agent': 'WikiLearnBot/1.0 (https://raphaelcote.com/en; cotlarrc@gmail.com) obs/1.0'}
+
+		response = requests.get(image_wikipedia.get_url(), headers=headers)
+		with open(filename, "wb") as f:
+			f.write(response.content)
+		time.sleep(0.5)
+	except Exception as err:
+		print(err)
+		return None
+	return filename

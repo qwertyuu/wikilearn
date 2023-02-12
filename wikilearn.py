@@ -9,7 +9,6 @@ import sounddevice as sd
 import time
 import mmap
 import queue
-import ImageDownloader
 from PIL import Image
 import shutil
 import os

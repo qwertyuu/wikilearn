@@ -128,8 +128,8 @@ def ui_logic(articles_queue: queue.Queue):
 		with open(wiki_super_container.audio.file) as f:
 			m = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
 
-		sound_length_seconds = sf.info(wiki_super_container.audio.file).duration
 		try:
+			sound_length_seconds = sf.info(wiki_super_container.audio.file).duration
 			data, fs = sf.read(wiki_super_container.audio.file, dtype='float32')
 			sd.play(data, fs)
 		except Exception as e:

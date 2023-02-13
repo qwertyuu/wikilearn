@@ -10,6 +10,7 @@ import time
 import mmap
 import queue
 from PIL import Image
+import qrcode
 import shutil
 import os
 import requests
@@ -32,14 +33,21 @@ with open(os.path.join(os.path.dirname(__file__), "voices.txt")) as f:
 
 
 class OBSSceneManager:
-	def __init__(self, text_source, image_source):
+	def __init__(self, text_source, image_source, qrcode_source):
 		self.image_source = image_source
+		self.qrcode_source = qrcode_source
 		self.text_source = text_source
 
 	def update_image(self, filename):
 		image_settings = obs.obs_data_create()
 		obs.obs_data_set_string(image_settings, "file", filename)
 		obs.obs_source_update(self.image_source, image_settings)
+		obs.obs_data_release(image_settings)
+
+	def update_qrcode(self, filename):
+		image_settings = obs.obs_data_create()
+		obs.obs_data_set_string(image_settings, "file", filename)
+		obs.obs_source_update(self.qrcode_source, image_settings)
 		obs.obs_data_release(image_settings)
 
 	def clear_image(self):
@@ -120,10 +128,17 @@ def ui_logic(articles_queue: queue.Queue):
 		wiki_super_container: WikiSuperContainer = articles_queue.get()
 		wiki_article = wiki_super_container.wiki_article
 
-		obs.script_log(obs.LOG_DEBUG, wiki_article.get_title())
+		title = wiki_article.get_title()
+		article_link = f"https://en.wikipedia.org/wiki/{urllib.parse.quote(title)}"
+		img = qrcode.make(article_link)
+		qrcode_image_path = os.path.join(queued_path, "qrcode.png")
+		img.save(qrcode_image_path)
+
+		obs.script_log(obs.LOG_DEBUG, title)
 		obs.script_log(obs.LOG_DEBUG, repr(articles_queue.qsize()))
 		obs.script_log(obs.LOG_DEBUG, repr(wiki_super_container.audio.file))
-		obs_manager.update_title(wiki_article.get_title())
+		obs_manager.update_title(title)
+		obs_manager.update_qrcode(qrcode_image_path)
 
 		with open(wiki_super_container.audio.file) as f:
 			m = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
@@ -260,7 +275,7 @@ def tts(text, save_to):
 	# voice parameters and audio file type
 	random_voice = random.choice(available_voices)
 	print(random_voice)
-	response = requests.get("http://localhost:5002/api/tts?text=" + urllib.parse.quote(text) + '&speaker_id=' + urllib.parse.quote(random_voice))
+	response = requests.get("https://coqui-en.milleni.me/api/tts?text=" + urllib.parse.quote(text))
 
 	# The response's audio_content is binary.
 	with open(save_to, 'wb') as out:
@@ -316,7 +331,8 @@ def refresh_manager():
 	global obs_manager, text_source_name
 	text_source = obs.obs_get_source_by_name(text_source_name)
 	image_source = obs.obs_get_source_by_name("Image")
-	obs_manager = OBSSceneManager(text_source, image_source)
+	qr_source = obs.obs_get_source_by_name("QR")
+	obs_manager = OBSSceneManager(text_source, image_source, qr_source)
 
 
 def script_properties():
@@ -342,7 +358,6 @@ def script_properties():
 
 def download_image(image_wikipedia: WikiImage, folder):
 	try:
-		print("new")
 		wikipedia_filename = image_wikipedia.get_title()
 		filename = os.path.join(folder, sanitize_filename(wikipedia_filename))
 		headers = {'User-Agent': 'WikiLearnBot/1.0 (https://raphaelcote.com/en; cotlarrc@gmail.com) obs/1.0'}

@@ -226,7 +226,11 @@ def downloader_logic(articles_queue: queue.Queue):
 
 			tts_filename = os.path.join(downloading_folder, 'hello.wav')
 
-			tts(wiki_article.get_extract(), tts_filename)
+			try:
+				tts(wiki_article.get_extract(), tts_filename)
+			except Exception as ex:
+				print(ex)
+				continue
 
 			all_images = wiki_article.get_filtered_images() + (
 				wikimedia_api_query.get_filenames() if wikimedia_api_query is not None else [])
@@ -273,8 +277,6 @@ def tts(text, save_to):
 	
 	# Perform the text-to-speech request on the text input with the selected
 	# voice parameters and audio file type
-	random_voice = random.choice(available_voices)
-	print(random_voice)
 	response = requests.get("https://coqui-en.milleni.me/api/tts?text=" + urllib.parse.quote(text))
 
 	# The response's audio_content is binary.
